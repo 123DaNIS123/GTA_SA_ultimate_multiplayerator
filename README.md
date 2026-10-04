@@ -13,7 +13,7 @@ What does:
 requirements:
   * .asi loader (silent's asi loader)
 installation:
-  * move SplitScreen.asi and SplitScreen.ini to the game folder
+  * move UltimateMultiplayeratorSplitScreen.asi and UltimateMultiplayeratorSplitScreen.ini to the game folder. Split-screen versions!
 
 
 __________________________________________________________________________________________________________________________________________________________________________
