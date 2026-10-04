@@ -1,8 +1,41 @@
 # GTA_SA_ultimate_multiplayerator
 GTA SA .asi mod that makes your GTA SA single-player be playable as split-screen or as online multiplayer
 
+_________________________________________________________________________________________________________________________________________________________________________
+Split-Screen Multiplayer:
+What does:
+  * converts single-player GTA SA to split-screen multiplayer in one PC.
+    // in SplitScren.ini file: check controls for different actions such as:
+            1. drop weapon/ammo, drop money
+            2. revive player <---- you can adjust the times in .ini file (there are 2 knocked out causes: nearly busted and nearly wasted)
+            3. sit as passenger, hijack player <------ hold same button - sit as passenger
+    // if you will use GTA5LikeControls: for drops use RB instead of LB, use G instead of Tab etc. You can look for the changes in .ini file. Other buttons instructions will pop-up
 requirements:
-1) .asi loader (silent's asi loader)
-
+  * .asi loader (silent's asi loader)
 installation:
-2) move SplitScreen.asi for split-screen offline gameplay on one PC
+  * move SplitScreen.asi and SplitScreen.ini to the game folder
+
+
+__________________________________________________________________________________________________________________________________________________________________________
+GTA5LikeControls:
+What does:
+  * makes controls more comfortable, especially when using controllers.
+  * make constrols as in GTA5:
+           - YOU CAN use weapon selection wheel using LB as in GTA 5
+           - COMFORABLE controls for aiming and shooting as in GTA 5  
+requirements:
+  * .asi loader (silent's asi loader)
+  * GInput <------ if you use controllers.
+installation:
+  * move gta5likecontrols.asi and gta5likecontrols.ini to the game folder
+
+
+
+__________________________________________________________________________________________________________________________________________________________________________
+Online Multiplayer:
+What does:
+  * real across internet or local network multiplayer derived from Split-Screen multiplayer. Host and connect yourselves. In development...
+requirements:
+  * .asi loader (silent's asi loader)
+installation:
+  * move UltimateMultiplayerator.asi and UltimateMultiplayerator.ini to game folder
