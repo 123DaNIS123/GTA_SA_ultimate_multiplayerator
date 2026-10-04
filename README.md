@@ -1,6 +1,9 @@
 # GTA_SA_ultimate_multiplayerator
 GTA SA .asi mod that makes your GTA SA single-player be playable as split-screen or as online multiplayer
 
+Recommendations for all mods:
+use Silent's Patch to fix most common GTA SA game issues such as low frame rate limit, some game bugs etc. Because tested and developed with Silent's Patch
+
 _________________________________________________________________________________________________________________________________________________________________________
 Split-Screen Multiplayer:
 What does:
@@ -39,3 +42,4 @@ requirements:
   * .asi loader (silent's asi loader)
 installation:
   * move UltimateMultiplayerator.asi and UltimateMultiplayerator.ini to game folder
+
