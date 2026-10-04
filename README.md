@@ -2,6 +2,9 @@
 GTA SA .asi mod that makes your GTA SA single-player be playable as split-screen or as online multiplayer.
 Mod in development process..
 
+INSTALLATION IS SIMPLE:
+JUST MOVE ALL DOWNLOADED MODS FILES AND REQUIRED DEPENDENCIES TO GAME FOLDER where gta_sa.exe is. (clean 1.0 US .exe)
+
 Recommendations for all mods:
   - use ASI loader to make these mods work, recommend Silent's ASI Loader:
 https://www.gtagarage.com/mods/download.php?f=37262
