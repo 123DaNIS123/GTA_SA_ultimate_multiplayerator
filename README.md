@@ -43,6 +43,6 @@ What does:
 installation:
   * move UltimateMultiplayerator.asi and UltimateMultiplayerator.ini to game folder
 Instruction:
-  * host server wherever you want: use file from server folder.
-  * join using client file
-
+  * host server wherever you want: UMServer.bat or UMServer.sh
+  * join using UMLauncher.bat
+  * configure in UltimateMultiplayerator.ini
