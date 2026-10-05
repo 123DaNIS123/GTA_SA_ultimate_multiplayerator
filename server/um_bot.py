@@ -32,6 +32,7 @@ class Client:
         self.name = name
         self.password = password
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.wait = 0.05
         self.sock.settimeout(0.05)
         self.id = None
         self.spawn = None
@@ -97,7 +98,10 @@ class Client:
 
     def pump(self):
         """Reads what has arrived."""
+        began = time.time()
         while True:
+            if time.time() - began > 0.1:   # (a steady stream must not keep the caller here: it has its own things to send)
+                return
             try:
                 data, _ = self.sock.recvfrom(4096)
             except OSError:
@@ -202,6 +206,71 @@ class Client:
     def state(self, x, y, z, heading=0.0, speed=0.0, health=100.0, flags=0, vehicle=0, interior=0, weapon=0, aim=0, ride=0, seat=0):
         self.sequence += 1
         self.send(C_STATE, struct.pack(STATE_FORMAT, self.sequence, x, y, z, heading, speed, int(health * 10), flags, vehicle, interior, weapon, aim, ride, seat))
+        if not vehicle:
+            self.sync(x, y, z, heading, speed, health, flags, interior, weapon, aim)
+        else:
+            self.sync_vehicle(x, y, z, heading, speed, health, vehicle, interior)
+
+    def sync_vehicle(self, x, y, z, heading, speed, health, model, interior):
+        """Client version 2: the bot at the wheel of a vehicle its own "game" simulates (handle 1)."""
+        import math
+        now = time.time()
+        before = getattr(self, "sync_before", None)
+        self.sync_before = (now, x, y)
+        vx = vy = 0.0
+        if before and now - before[0] > 0.001 and (abs(x - before[1]) + abs(y - before[2])) > 0.0005:
+            vx, vy = (x - before[1]) / (now - before[0]), (y - before[2]) / (now - before[0])
+            heading = math.atan2(-vx, vy)
+        fx, fy = -math.sin(heading), math.cos(heading)
+        turn = 0.0
+        last = getattr(self, "sync_heading", None)
+        if last is not None and before and now - before[0] > 0.001:
+            d = (heading - last + math.pi) % (2 * math.pi) - math.pi
+            turn = d / (now - before[0]) / 50.0
+        self.sync_heading = heading
+        self.sync_sequence = (getattr(self, "sync_sequence", 0) + 1) & 0xFFFF
+        self.send(29, struct.pack(self.SYNC_FORMAT, 2, 2, self.sync_sequence, x, y, z, vx / 50.0, vy / 50.0, 0.0, heading,
+                                  int(health * 10), 0, 0, 0, interior, 0, 0, 0, 0, 0, 0,
+                                  fx, fy, 0.0, x - fx * 6.0, y - fy * 6.0, z + 2.0, math.atan2(fy, fx), 18, 70, getattr(self, "skin", 0),
+                                  0, 1, 0, model, fy, -fx, 0.0, fx, fy, 0.0, 0.0, 0.0, turn, 1000, 3, 1, 0, 0))
+
+    # Client version 2: the detailed state the games play each other's characters from (see net/PROTOCOL.md). The
+    # bot "holds the stick forward" while it moves, with its camera looking where it walks, and holds aim / fire when
+    # its state says so.
+    SYNC_FORMAT = "<BBH3f3ffHBBHBB4bI3f3ffBBHHIBH3f3f3fH2BHI"
+
+    def sync(self, x, y, z, heading, speed, health, flags, interior, weapon, aim):
+        import math
+        now = time.time()
+        before = getattr(self, "sync_before", None)
+        self.sync_before = (now, x, y)
+        if before and now - before[0] > 0.001 and (abs(x - before[1]) + abs(y - before[2])) > 0.0005:
+            vx, vy = (x - before[1]) / (now - before[0]), (y - before[2]) / (now - before[0])
+            speed = math.hypot(vx, vy)
+            heading = math.atan2(-vx, vy)   # it faces the way it goes
+        fx, fy = -math.sin(heading), math.cos(heading)
+        up = max(-1.0, min(1.0, aim / 127.0))
+        flat = math.sqrt(max(0.0, 1.0 - up * up))
+        source = (x - fx * 3.0, y - fy * 3.0, z + 1.0)
+        target = getattr(self, "aim_at", None)
+        if target:   # aims at a place (another player): the camera right behind the gun, looking there
+            dx, dy, dz = target[0] - x, target[1] - y, target[2] - (z + 0.5)
+            far = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+            fx, fy, up = dx / far, dy / far, dz / far
+            flat = 1.0
+            heading = math.atan2(-fx, fy)
+            source = (x - fx * 0.3, y - fy * 0.3, z + 0.5)
+        aiming, firing = bool(flags & 8), bool(flags & 16)
+        buttons = (4 if aiming or firing else 0) | (1 << 13 if firing else 0)   # R1 = pad slot 6, circle = slot 17
+        if speed < 2.5:
+            buttons |= 1 << 17                                                  # the "walk" key (pad slot 21): not running
+        moving = speed > 0.3 and not (flags & 2)
+        self.sync_sequence = (getattr(self, "sync_sequence", 0) + 1) & 0xFFFF
+        self.send(29, struct.pack(self.SYNC_FORMAT, 2, 1, self.sync_sequence, x, y, z, fx * speed / 50.0, fy * speed / 50.0, 0.0, heading,
+                                  int(health * 10), 0, weapon, 30, interior, (1 if flags & 4 else 0) | (2 if flags & 2 else 0) | (4 if aiming or firing else 0),
+                                  0, -127 if moving else 0, 0, 0, buttons,
+                                  fx * flat, fy * flat, up, source[0], source[1], source[2], math.atan2(fy, fx), 53 if aiming or firing else 4, 70, getattr(self, "skin", 0),
+                                  0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0))
 
     def ask_mission(self, mission):
         self.send(C_MISSION_ASK, bytes([mission]))
@@ -320,6 +389,8 @@ def main():
     parser.add_argument("--parked", type=int, default=0, help="parked cars this bot simulates, in a row")
     parser.add_argument("--peds", type=int, default=0, help="pedestrians this bot simulates, walking a wider circle")
     parser.add_argument("--cars", type=int, default=0, help="cars with drivers this bot simulates, driving a circle of 18 m")
+    parser.add_argument("--at-players", action="store_true", help="with --fire: aims at the first other player it sees (client version 2)")
+    parser.add_argument("--skin", type=int, default=0, help="the character model the bot reports (client version 2; 0 = CJ)")
     parser.add_argument("--weapon", type=int, default=0, help="the weapon the bot holds (30 = AK-47)")
     parser.add_argument("--down", type=float, default=0.0, help="the bot stands at the centre and lies knocked down from this second on, until somebody revives it")
     parser.add_argument("--helper", action="store_true", help="the bot stands at the centre and revives any knocked-down player beside it after 7 s")
@@ -340,6 +411,7 @@ def main():
 
     time.sleep(args.join_delay)
     bot = Client(args.host, args.port, args.name, args.password)
+    bot.skin = args.skin
     if not bot.connect(30.0):
         print("could not join: %s" % ("rejected, reason %d" % bot.rejected if bot.rejected else "no answer"))
         return 1
@@ -399,6 +471,8 @@ def main():
                 swing = math.sin(t * 0.9) if args.sweep else 1.0
                 bot.state(cx, cy, cz, heading=args.heading + (math.sin(t * 0.4) * 0.6 if args.sweep else 0.0), speed=0.0, weapon=args.weapon, flags=8, aim=int(args.aim * swing))
             elif args.fire:
+                if args.at_players and bot.others:
+                    bot.aim_at = list(bot.others.values())[0][:3]
                 bot.state(cx, cy, cz, heading=t * 0.3, speed=0.0, weapon=args.weapon, flags=8 | (16 if int(t) % 3 else 0), aim=10)
             else:
                 bot.state(x, y, cz, heading=angle, speed=1.4, weapon=args.weapon)

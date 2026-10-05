@@ -29,6 +29,11 @@ MAGIC = b"UM"
 C_QUERY, C_HELLO, C_AUTH, C_STATE, C_BYE, C_PING, C_ENTITIES, C_VEHICLES, C_HIT, C_REVIVE, C_ENTITY_HIT, C_MISSION_ASK, C_MISSION_VOTE, C_MISSION_TEXT, C_MISSION_END, C_CUTSCENE, C_CUTSCENE_DONE, C_VEHICLE_HIT, C_MISSION_WORLD, C_PICKUP_TAKEN, C_MISSION_INVITE, C_PLAYER_DATA, C_PLAYER_DATA_GET, C_WORLD_GET, C_WORLD_PUT, C_WORLD_CHUNK, C_SAVE_ASK, C_SAVE_VOTE = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
 S_INFO, S_CHALLENGE, S_WELCOME, S_REJECT, S_SNAPSHOT, S_JOINED, S_LEFT, S_PONG, S_CORRECT, S_KICK, S_ENTITIES, S_ROLE, S_VEHICLES, S_TAKEN, S_DAMAGE, S_REVIVED, S_ENTITY_DAMAGE, S_MISSION_ASK, S_MISSION_RESULT, S_MISSION_TEXT, S_MISSION_END, S_CUTSCENE, S_CUTSCENE_FREE, S_VEHICLE_HIT, S_MISSION_WORLD, S_PICKUP_TAKEN, S_PARTY, S_PLAYER_DATA, S_WORLD_INFO, S_WORLD_CHUNK, S_WORLD_PUT, S_SAVE_ASK, S_SAVE_RESULT = 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97
 
+# The detailed state of a player (client version 2): what the buttons are doing, where the player aims, what they
+# drive. The server does not look inside; it passes it on to the players near the sender (see net/PROTOCOL.md).
+C_SYNC, S_SYNC = 29, 98
+SYNC_MAX = 240
+
 REJECT_FULL, REJECT_PASSWORD, REJECT_VERSION, REJECT_NAME, REJECT_BUSY = 1, 2, 3, 4, 5
 
 # the place a new single-player game starts at (Grove Street, in front of CJ's house)
@@ -813,6 +818,16 @@ class Server:
             if not parts:
                 self.send(me.addr, S_ENTITIES, bytes([0]))
 
+    def on_sync(self, player, body):
+        if not 1 <= len(body) <= SYNC_MAX:
+            return
+        out = struct.pack("<H", player.id) + body
+        px, py = player.state[0], player.state[1]
+        r2 = self.radius * self.radius
+        for other in self.players.values():
+            if other is not player and (other.state[0] - px) ** 2 + (other.state[1] - py) ** 2 <= r2:
+                self.send(other.addr, S_SYNC, out)
+
     def snapshots(self, now):
         players = list(self.players.values())
         r2 = self.radius * self.radius
@@ -857,6 +872,8 @@ class Server:
             player.last_heard = now
             if kind == C_STATE:
                 self.on_state(player, body, now)
+            elif kind == C_SYNC:
+                self.on_sync(player, body)
             elif kind == C_ENTITIES:
                 self.on_entities(player, body, now)
             elif kind == C_VEHICLES:
