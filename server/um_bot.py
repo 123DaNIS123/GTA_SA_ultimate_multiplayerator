@@ -200,12 +200,20 @@ class Client:
                 self.entities = fresh if body[0] < 40 else {**self.entities, **fresh}
             elif kind == S_CORRECT:
                 self.corrections.append(struct.unpack_from("<ffff", body))
+            elif kind == 98 and len(body) == 137:
+                # client version 2: "I have got into your vehicle" (the last two fields of another player's state)
+                owner, key = struct.unpack_from("<HI", body, 131)
+                if owner == self.id and key == 1 and not getattr(self, "car_taken", False):
+                    self.car_taken = True
+                    print("player %d took this bot's car: on foot now" % struct.unpack_from("<H", body)[0])
             elif kind == S_KICK:
                 self.kicked = body[1:1 + body[0]].decode("utf-8", "replace")
 
     def state(self, x, y, z, heading=0.0, speed=0.0, health=100.0, flags=0, vehicle=0, interior=0, weapon=0, aim=0, ride=0, seat=0):
         self.sequence += 1
         self.send(C_STATE, struct.pack(STATE_FORMAT, self.sequence, x, y, z, heading, speed, int(health * 10), flags, vehicle, interior, weapon, aim, ride, seat))
+        if vehicle and getattr(self, "car_taken", False):   # (its car was taken: it stands beside where it was)
+            vehicle, x, speed = 0, x - 3.0, 0.0
         if not vehicle:
             self.sync(x, y, z, heading, speed, health, flags, interior, weapon, aim)
         else:
@@ -435,6 +443,10 @@ def main():
     announced = []
     while time.time() - start < args.seconds and bot.kicked is None:
         t = time.time() - start
+        if t - getattr(bot, "street_said", -10.0) >= 3.0:   # the shared street, as this player gets it
+            bot.street_said = t
+            print("street at %3.0f s: this bot makes it: %s; receives %d pedestrians, %d vehicles" % (
+                t, bot.populates, len(getattr(bot, "entities", {})), len(getattr(bot, "vehicles", {}))))
         angle = t * 1.4 / args.radius  # walking pace
         x, y = cx + math.cos(angle) * args.radius, cy + math.sin(angle) * args.radius
         cars = []
