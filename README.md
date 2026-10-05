@@ -13,7 +13,7 @@ https://github.com/CookiePLMonster/SilentPatch/releases/download/1.1-BUILD34.1-S
   - use GInput for controller support:
 https://silent.rockstarvision.com/uploads/GInputSA.zip
 
-
+1)
 _________________________________________________________________________________________________________________________________________________________________________
 Split-Screen Multiplayer:
 What does:
@@ -38,8 +38,22 @@ installation:
   * move gta5likecontrols.asi and gta5likecontrols.ini to the game folder
 
 
+2)
+_____________________________________________________________________________________________________________________________________________
+GTA Zombie Andreas specific split-screen:
+disable or remove from the game folder:
+1) UltimateMultiplayeratorSplitScreen.asi, UltimateMultiplayeratorSplitScreen.ini
+2) gta5likecontrols.asi, gta5likecontrols.ini
+or Enable=0 in UltimateMultiplayeratorSplitScreen.ini and gta5likecontrols.ini.
+Enalbe COOP in in-game settings (you do it in gamemode selection process, others -> COOP enable)
+What does:
+  Enable split-screen on top of COOP Beta that is in GTA Zombie Andreas
 
-__________________________________________________________________________________________________________________________________________________________________________
+
+
+3)IN DEVELOPMENT - DESYNC, BUGS etc. . . . . . . 
+_________________________________________________________________________________________________________________________
+_
 Online Multiplayer:
 What does:
   * real across internet or local network multiplayer derived from Split-Screen multiplayer. Host and connect yourselves. In development...
