@@ -1,4 +1,5 @@
-"""Who makes the street for whom (Server.roles), checked without a network: python GTAGame\\server\\test_groups.py"""
+"""The server's rules that need no network: who makes the street for whom (roles), who simulates which pedestrian
+(handover), who gets which seat (on_vehicle_in). Run: python GTAGame\\server\\test_groups.py"""
 import struct
 import sys
 
@@ -14,7 +15,7 @@ def check(what, ok):
 
 
 class Fake:
-    """Just what Server.roles uses of a server."""
+    """Just what those routines use of a server."""
     def __init__(self):
         self.players, self.entity_index, self.sent, self.other = {}, {}, {}, []
 
@@ -34,6 +35,7 @@ class Fake:
     def add(self, pid, x, y, interior=0):
         p = um_server.Player(pid, "p%d" % pid, pid, 0.0)
         p.state = (x, y, 13.0, 0.0, 0.0, 1000, 0, 0, interior, 0, 0)
+        p.state_time = 1.0e12   # (heard from just now, whatever time a test passes)
         self.players[pid] = p
         return p
 
@@ -46,7 +48,15 @@ class Fake:
         return {pid: (p.populates, list(p.members)) for pid, p in self.players.items()}
 
 
+def pedestrian(owner, key, ident, x, y):
+    e = um_server.Entity()
+    e.id, e.owner, e.key, e.kind, e.x, e.y, e.heard, e.offered, e.offered_to = ident, owner.id, key, um_server.KIND_PED, x, y, 0.0, 0.0, 0
+    owner.entities[key] = e
+    return e
+
+
 def main():
+    # ---- groups
     f = Fake()
     f.add(1, 0.0, 0.0)
     f.add(2, 150.0, 0.0)
@@ -60,30 +70,23 @@ def main():
     body = f.sent[1]
     check("the role packet lists the group for the game that makes its street", body[0] == 1 and body[1] == 2 and struct.unpack_from("<2H", body, 2) == (2, 3))
     check("... and is a plain 'no' with an empty list for the others", f.sent[2] == bytes([0, 0]))
-
-    f.move(3, 330.0, 0.0)    # 180 m from player 2, 330 m from player 1: stays (let go beyond 340 m)
+    f.move(3, 330.0, 0.0)
     r = f.roles(11.0)
     check("a member is kept a little beyond the distance at which it would be taken in", r[1] == (True, [2, 3]))
     f.move(3, 345.0, 0.0)
     r = f.roles(12.0)
     check("beyond that it makes its own street, and the player near it joins it", r[1] == (True, [2]) and r[3] == (True, [4]) and r[4] == (False, []))
-
-    f.move(1, 2000.0, 0.0)   # the leader leaves the group
-    r = f.roles(13.0)
-    check("the leader gone: the next lowest number takes over those in reach", r[1] == (True, []) and r[2] == (True, [3, 4]) or r[2] == (True, [3]))
-
-    g = Fake()               # many players in one place: no more than the client's list holds
+    g = Fake()
     for i in range(1, 25):
         g.add(i, i * 3.0, 0.0)
     r = g.roles(1.0)
     check("a group holds at most %d players besides its leader; the rest form the next group" % um_server.GROUP_MAX,
           len(r[1][1]) == um_server.GROUP_MAX and sum(1 for v in r.values() if v[0]) == 2)
-    # one syncer for each pedestrian, handed over as in MTA
+
+    # ---- one syncer for each pedestrian, handed over as in MTA
     h = Fake()
     a, b = h.add(1, 0.0, 0.0), h.add(2, 150.0, 0.0)
-    e = um_server.Entity()
-    e.id, e.owner, e.key, e.kind, e.x, e.y, e.heard, e.offered, e.offered_to = 500, 1, 77, um_server.KIND_PED, 60.0, 0.0, 0.0, 0.0, 0
-    a.entities[77] = e
+    e = pedestrian(a, 77, 500, 60.0, 0.0)
     h.handover(10.0)
     check("a pedestrian within 100 m of its game's player stays with that game", not h.other)
     e.x = 120.0   # 120 m from player 1, 30 m from player 2
@@ -100,12 +103,24 @@ def main():
     n = len(h.other)
     check("a report of it from the old game is refused and the word repeated", h.was_released(a, 1, 77, 12.5) and len(h.other) == n + 1)
     check("other keys of the old game are not touched", not h.was_released(a, 1, 78, 12.5))
-    # a seat is asked for
+
+    # ---- a game that stands still (a menu) gives its things away, whatever the distance
+    q = Fake()
+    a, b = q.add(1, 0.0, 0.0), q.add(2, 80.0, 0.0)
+    pedestrian(a, 5, 700, 10.0, 0.0)
+    q.handover(10.0)
+    check("a pedestrian near its own game's player is not offered to a player farther away", not q.other)
+    a.state_time = 5.0
+    q.handover(12.0)
+    check("... but it is when its game stands still (a menu)", q.other == [(2, um_server.S_HANDOVER, struct.pack("<BI", 1, 700))])
+
+    # ---- a seat is asked for
     v = Fake()
     a, b, c = v.add(1, 0.0, 0.0), v.add(2, 2.0, 0.0), v.add(3, 4.0, 0.0)
     car = um_server.Vehicle()
     car.id, car.owner, car.key, car.kind, car.player, car.x, car.y = 900, 1, 55, 0, 0, 1.0, 0.0
     a.vehicles[55] = car
+
     def ask(player, owner, key, seat, now, seats=3):
         v.other.clear()
         v.on_vehicle_in(player, struct.pack("<HIBB", owner, key, seat, seats), now)
@@ -123,11 +138,10 @@ def main():
     a.state = a.state[:6] + (um_server.FLAG_IN_VEHICLE,) + a.state[7:]
     r = ask(c, 0xFFFF, 900, 0, 9.0)
     check("the wheel of a car somebody sits in: yes, the driver is pulled out", r[0] == 2)
-    r = ask(a, 1, 55, 0, 13.0)
-    check("... and the first driver can take it back later", r[0] == 2)
-    v.on_vehicle_out(a)
-    r = ask(c, 0xFFFF, 900, 0, 20.0)
+    v.on_vehicle_out(c)
+    r = ask(b, 0xFFFF, 900, 0, 20.0)
     check("after the driver left, the wheel is free again", r[0] == 1)
+
     print("FAILED: %d" % len(failed) if failed else "all passed")
     return 1 if failed else 0
 

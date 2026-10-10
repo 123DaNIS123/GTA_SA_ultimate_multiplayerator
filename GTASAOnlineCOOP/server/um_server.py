@@ -71,6 +71,8 @@ PED_SYNCER_DISTANCE, VEH_SYNCER_DISTANCE = 100.0, 130.0
 # 1 any passenger seat), passenger seats it has. S_VEHICLE_IN: result (0 no, 1 yes, 2 yes - the driver is pulled out),
 # the same owner and key, the seat given, the reason of a no (1 dead, 2 somebody is just getting in, 3 no seat free).
 C_VEHICLE_IN, C_VEHICLE_OUT, S_VEHICLE_IN = 31, 32, 101
+# What a pedestrian is doing to a player (attacking): from its game (key, target player, weapon), to the others by id.
+C_ENTITY_ACTS, S_ENTITY_ACTS = 33, 102
 C_ADOPT, S_HANDOVER, S_RELEASE = 30, 99, 100   # (kind 1 pedestrian / 2 vehicle, id, the adopting game's own key) / (kind, id) / (kind, the old game's key, id)
 GROUP_MAX = 16                      # players in one group besides that one (the client's list is this long)
 
@@ -847,7 +849,12 @@ class Server:
             things = [(1, e, e.x, e.y, PED_SYNCER_DISTANCE) for e in owner.entities.values() if e.kind == KIND_PED]
             things += [(2, v, v.x, v.y, VEH_SYNCER_DISTANCE) for v in owner.vehicles.values() if not v.kind & (VEH_MINE | VEH_SCRIPT) and not v.player]
             for kind, thing, x, y, limit in things:
-                if (x - ox) ** 2 + (y - oy) ** 2 <= limit * limit or now - thing.offered < 1.0:
+                if now - thing.offered < 1.0:
+                    continue
+                paused = now - owner.state_time > 1.0   # its game draws no frames: it cannot simulate anything
+                if paused:
+                    limit = ENT_RANGE
+                elif (x - ox) ** 2 + (y - oy) ** 2 <= limit * limit:
                     continue
                 best = None
                 for p in players:
@@ -928,6 +935,23 @@ class Server:
         riding[player.id] = (name, got, now)
         answer(result, got)
 
+    def on_entity_acts(self, player, data):
+        if not data or len(data) < 1 + data[0] * 7:
+            return
+        out = []
+        for i in range(min(data[0], 16)):
+            key, target, weapon = struct.unpack_from("<IHB", data, 1 + i * 7)
+            entity = player.entities.get(key)
+            if entity is not None and target in self.players:
+                out.append(struct.pack("<IHB", entity.id, target, weapon))
+        if not out:
+            return
+        body = bytes([len(out)]) + b"".join(out)
+        px, py = player.state[0], player.state[1]
+        for other in self.players.values():
+            if other is not player and (other.state[0] - px) ** 2 + (other.state[1] - py) ** 2 <= 250.0 ** 2:
+                self.send(other.addr, S_ENTITY_ACTS, body)
+
     def on_vehicle_out(self, player):
         self.__dict__.setdefault("riding", {}).pop(player.id, None)
 
@@ -948,7 +972,8 @@ class Server:
     def vehicle_snapshots(self, now):
         players = list(self.players.values())
         for owner in players:
-            for key in [k for k, v in owner.vehicles.items() if now - v.heard > ENT_LIFE]:
+            life = 120.0 if now - owner.state_time > 1.0 else ENT_LIFE   # (a paused game's things wait for it, or for another game to take them)
+            for key in [k for k, v in owner.vehicles.items() if now - v.heard > life]:
                 del owner.vehicles[key]
         r2 = VEH_RANGE * VEH_RANGE
         for me in players:
@@ -968,7 +993,8 @@ class Server:
     def entity_snapshots(self, now):
         players = list(self.players.values())
         for owner in players:
-            for key in [k for k, e in owner.entities.items() if now - e.heard > ENT_LIFE]:
+            life = 120.0 if now - owner.state_time > 1.0 else ENT_LIFE
+            for key in [k for k, e in owner.entities.items() if now - e.heard > life]:
                 self.entity_index.pop(owner.entities[key].id, None)
                 del owner.entities[key]
         r2 = ENT_RANGE * ENT_RANGE
@@ -1042,6 +1068,8 @@ class Server:
                 self.on_state(player, body, now)
             elif kind == C_SYNC:
                 self.on_sync(player, body)
+            elif kind == C_ENTITY_ACTS:
+                self.on_entity_acts(player, body)
             elif kind == C_VEHICLE_IN:
                 self.on_vehicle_in(player, body, now)
             elif kind == C_VEHICLE_OUT:
