@@ -24,7 +24,7 @@ What does:
             3. sit as passenger, hijack player <------ hold same button - sit as passenger
     // if you will use GTA5LikeControls: for drops use RB instead of LB, use G instead of Tab etc. You can look for the changes in .ini file. Other buttons instructions will pop-up
 installation:
-  * move UltimateMultiplayeratorSplitScreen.asi and UltimateMultiplayeratorSplitScreen.ini to the game folder. Split-screen versions!
+  * move everyting from GTASASplitScreenCOOP to the game folder. check in both .ini files Enabled=1. Split-screen version!
 
 
 __________________________________________________________________________________________________________________________________________________________________________
@@ -35,7 +35,7 @@ What does:
            - YOU CAN use weapon selection wheel using LB as in GTA 5
            - COMFORABLE controls for aiming and shooting as in GTA 5  
 installation:
-  * move gta5likecontrols.asi and gta5likecontrols.ini to the game folder
+  * move gta5likecontrols.asi and gta5likecontrols.ini from GTASASplitScreenCOOP to the game folder and check in both .ini files Enabled=1
 
 
 2)
@@ -48,6 +48,8 @@ or Enable=0 in UltimateMultiplayeratorSplitScreen.ini and gta5likecontrols.ini.
 Enalbe COOP in in-game settings (you do it in gamemode selection process, others -> COOP enable)
 What does:
   Enable split-screen on top of COOP Beta that is in GTA Zombie Andreas
+Installation:
+  * move everyting from GTAZombieAndreasSplitScreen to the game folder. check in both .ini files Enabled=1. Zombie Andreas Split-screen version!
 
 
 
@@ -58,7 +60,7 @@ Online Multiplayer:
 What does:
   * real across internet or local network multiplayer derived from Split-Screen multiplayer. Host and connect yourselves. In development...
 installation:
-  * move UltimateMultiplayerator.asi and UltimateMultiplayerator.ini to game folder
+     move everyting from GTASAOnlineCOOP to the game folder. check in both .ini files Enabled=1. Split-screen version!
 Instruction:
   * host server wherever you want: UMServer.bat or UMServer.sh
   * join using UMLauncher.bat
