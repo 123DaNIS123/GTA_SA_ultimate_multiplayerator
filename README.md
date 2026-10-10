@@ -3,7 +3,7 @@ GTA SA .asi mod that makes your GTA SA single-player be playable as split-screen
 Mod in development process.. Write your ideas, wishes, bug reports etc. here in this repo by opening an issue.
 
 INSTALLATION IS SIMPLE:
-JUST MOVE ALL DOWNLOADED MODS FILES FROP SPECIFIC FOLDER AND MOVE REQUIRED DEPENDENCIES TO GAME FOLDER where gta_sa.exe is. (clean 1.0 US .exe)
+JUST MOVE ALL DOWNLOADED MODS FILES FROM SPECIFIC FOLDER AND MOVE REQUIRED DEPENDENCIES TO GAME FOLDER where gta_sa.exe is. (clean 1.0 US .exe)
 
 Recommendations for all mods:
   - use ASI loader to make these mods work, recommend Silent's ASI Loader:
