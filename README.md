@@ -1,9 +1,9 @@
 # GTA_SA_ultimate_multiplayerator
 GTA SA .asi mod that makes your GTA SA single-player be playable as split-screen or as online multiplayer.
-Mod in development process..
+Mod in development process.. Write your ideas, wishes, bug reports etc. here in this repo by opening an issue.
 
 INSTALLATION IS SIMPLE:
-JUST MOVE ALL DOWNLOADED MODS FILES AND REQUIRED DEPENDENCIES TO GAME FOLDER where gta_sa.exe is. (clean 1.0 US .exe)
+JUST MOVE ALL DOWNLOADED MODS FILES FROP SPECIFIC FOLDER AND MOVE REQUIRED DEPENDENCIES TO GAME FOLDER where gta_sa.exe is. (clean 1.0 US .exe)
 
 Recommendations for all mods:
   - use ASI loader to make these mods work, recommend Silent's ASI Loader:
@@ -20,9 +20,13 @@ What does:
   * converts single-player GTA SA to split-screen multiplayer in one PC.
     // in SplitScren.ini file: check controls for different actions such as:
             1. drop weapon/ammo, drop money
-            2. revive player <---- you can adjust the times in .ini file (there are 2 knocked out causes: nearly busted and nearly wasted)
+            2. revive player <---- you can adjust the times in .ini file (there are 2 knocked out causes: nearly-busted and nearly-wasted)
             3. sit as passenger, hijack player <------ hold same button - sit as passenger
-    // if you will use GTA5LikeControls: for drops use RB instead of LB, use G instead of Tab etc. You can look for the changes in .ini file. Other buttons instructions will pop-up
+    // if you will use GTA5LikeControls: for ammo drops use RB instead of LB, use G instead of Tab etc. You can look for the changes in .ini file. Other buttons instructions will pop-up
+    // you can sit in a passenger seat (to other player vehicle, to other npc's vehicle, to empty vehicle)
+    // perform drive-by aim and shooting (with pistols, micro-smgs, smgs, ARs) from passenger seat [Use RB on DS4 controller if GTA5likecontrols enabled]
+    // you can start mission solo then other player join afterwards if one mission task completed by player who wants to join in a mission
+    // you can complete mission COOP - if some issue occurs, create issue in this repo (the game is huge so didn't test everything yet.)
 installation:
   * move everyting from GTASASplitScreenCOOP to the game folder. check in both .ini files Enabled=1. Split-screen version!
 
