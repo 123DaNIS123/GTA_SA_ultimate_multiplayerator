@@ -61,6 +61,18 @@ ENT_LIFE = 1.5                   # seconds without a report before an entity is 
 MISSION_ASK_RANGE = 150.0        # players this near to the one starting a mission are asked to join
 MISSION_ASK_TIME = 10.0          # seconds to answer; no answer is a no
 SYNC_NEAR, SYNC_FAR = 200.0, 260.0  # another player's world takes over inside the first, is let go beyond the second
+GROUP_NEAR, GROUP_FAR = 300.0, 340.0  # ... and a group reaches this far from the player whose game makes its street
+# One syncer for each pedestrian and each empty vehicle, as in Multi Theft Auto (CPedSync.cpp, CUnoccupiedVehicleSync.cpp;
+# docs/MTA_NOTES.md): the game that has it keeps it while its player is within the distance; beyond it, it is offered
+# to the player within the distance whose game has the fewest. That game answers C_ADOPT, the old one is told S_RELEASE.
+PED_SYNCER_DISTANCE, VEH_SYNCER_DISTANCE = 100.0, 130.0
+# Getting into a vehicle is asked for, as in MTA (CGame.cpp, VEHICLE_REQUEST_IN): the server keeps who has which seat
+# and answers. C_VEHICLE_IN: whose game simulates it (0xFFFF: `key` is a street vehicle's id), key, seat (0 driver,
+# 1 any passenger seat), passenger seats it has. S_VEHICLE_IN: result (0 no, 1 yes, 2 yes - the driver is pulled out),
+# the same owner and key, the seat given, the reason of a no (1 dead, 2 somebody is just getting in, 3 no seat free).
+C_VEHICLE_IN, C_VEHICLE_OUT, S_VEHICLE_IN = 31, 32, 101
+C_ADOPT, S_HANDOVER, S_RELEASE = 30, 99, 100   # (kind 1 pedestrian / 2 vehicle, id, the adopting game's own key) / (kind, id) / (kind, the old game's key, id)
+GROUP_MAX = 16                      # players in one group besides that one (the client's list is this long)
 
 # Vehicles. A vehicle a player sits in is simulated by that player's game, whoever the area's syncer is; the traffic
 # is simulated by the syncer's game like the pedestrians.
@@ -75,16 +87,16 @@ VEH_RANGE = 200.0
 
 
 class Vehicle:
-    __slots__ = ("id", "owner", "data", "x", "y", "player", "heard", "kind")
+    __slots__ = ("id", "owner", "data", "x", "y", "player", "heard", "kind", "key", "offered", "offered_to")
 
 
 class Entity:
-    __slots__ = ("id", "owner", "key", "kind", "model", "pedtype", "x", "y", "z", "heading", "health", "interior", "heard")
+    __slots__ = ("id", "owner", "key", "kind", "model", "pedtype", "x", "y", "z", "heading", "health", "interior", "heard", "offered", "offered_to")
 
 
 class Player:
     __slots__ = ("id", "name", "addr", "joined", "last_heard", "sequence", "state", "state_time", "ping", "violations",
-                 "last_correct", "packets", "packet_window", "jump_pos", "jump_since", "populates", "role_sent", "entities", "vehicles", "taken", "hits", "hit_window", "party", "asked_at", "cut_name", "cut_waiting", "ride", "invited", "account", "data", "data_dirty", "saved_spot")
+                 "last_correct", "packets", "packet_window", "jump_pos", "jump_since", "populates", "leader", "members", "released", "role_sent", "entities", "vehicles", "taken", "hits", "hit_window", "party", "asked_at", "cut_name", "cut_waiting", "ride", "invited", "account", "data", "data_dirty", "saved_spot")
 
     def __init__(self, pid, name, addr, now):
         self.id = pid
@@ -97,6 +109,9 @@ class Player:
         self.jump_pos = None
         self.jump_since = 0.0
         self.populates = True      # this player's game makes the pedestrians around them
+        self.leader = None         # ... or this player's game does
+        self.released = {}         # (kind, this game's key) -> (when, id): handed over to another game; reports of it are refused
+        self.members = []          # the numbers of the players whose street this player's game makes besides its own
         self.role_sent = 0.0
         self.entities = {}         # the syncer's key -> Entity
         self.vehicles = {}         # the game's key -> Vehicle
@@ -128,6 +143,9 @@ class Server:
         self.max_players = max(1, min(args.max_players, 1000))
         self.tick = max(5, min(args.tick, 60))
         self.radius = args.radius
+        # The rate every game simulates at (frames a second): 60, 30 or 25, never more than 60. San Andreas' physics
+        # depend on the frame step; with SilentPatch and FramerateVigilante 60 behaves like the original 25 / 30.
+        self.fps = args.fps if args.fps in (25, 30, 60) else 60
         self.anticheat = args.anticheat and not args.no_anticheat
         self.timeout = 15.0
         self.data_dir = args.data
@@ -163,6 +181,10 @@ class Server:
         self.next_entity = 1
         self.entity_index = {}   # id -> Entity (pedestrians), for hits
         self.votes = {}          # vote id -> {host, mission, asked, answers, deadline}
+        # One mission at a time on a server (user's rule, 2026-10-10): the id of the player whose game runs it, or
+        # None. It runs in that game; when that player leaves, the mission has failed for everybody in it.
+        self.mission_owner = None
+        self.mission_number = 0
         self.next_vote = 1
         self.running = True
         self.started = time.time()
@@ -314,7 +336,7 @@ class Server:
         name = player.name.encode("utf-8")
         spot = player.saved_spot or SPAWN
         self.send(player.addr, S_WELCOME, struct.pack("<HBffffBB", player.id, self.tick, spot[0], spot[1], spot[2], spot[3],
-                                                      1 if self.anticheat else 0, len(name)) + name)
+                                                      1 if self.anticheat else 0, len(name)) + name + bytes([self.fps]))
 
     def drop(self, player, why, kick_reason=None):
         if player.id not in self.players:
@@ -330,6 +352,14 @@ class Server:
         player.entities.clear()    # what its game simulated is gone with it; the next syncer's game fills the street again
         player.vehicles.clear()
         self.cutscene_watched(player)
+        if self.mission_owner == player.id:
+            # the game that ran the mission is gone: failed for everybody who was in it (result 2 = its player left)
+            for i in player.party:
+                other = self.players.get(i)
+                if other:
+                    self.send(other.addr, S_MISSION_END, struct.pack("<HB", player.id, 2))
+            self.say("%s left while their game was running mission %d: the mission has failed for %d more players" % (player.name, self.mission_number, len(player.party)))
+            self.mission_owner = None
         for host in self.players.values():
             if player.id in host.party:
                 host.party.discard(player.id)
@@ -458,6 +488,12 @@ class Server:
                 return  # already asking (the game repeats the request until it hears the result)
         if now - host.asked_at < 2.0:
             return  # a late repeat of a request that has just been settled
+        if self.mission_owner is not None and self.mission_owner != host.id and self.mission_owner in self.players:
+            # another player's mission is running: not started (answer 3 = "a mission is already running")
+            host.asked_at = now
+            self.send(host.addr, S_MISSION_RESULT, struct.pack("<HHBBB", 0, self.mission_owner, mission, 0, 3))
+            self.say("%s wanted to start mission %d, but the mission of %s is running" % (host.name, mission, self.players[self.mission_owner].name))
+            return
         asked = [p for p in self.players.values() if p is not host and p.state[8] == host.state[8]
                  and (p.state[0] - host.state[0]) ** 2 + (p.state[1] - host.state[1]) ** 2 <= MISSION_ASK_RANGE ** 2]
         vote_id = self.next_vote
@@ -612,6 +648,7 @@ class Server:
             return
         host.asked_at = now
         if accepted:
+            self.mission_owner, self.mission_number = host.id, vote["mission"]
             host.party = set(asked)
             for i in asked:
                 self.leave_parties(self.players[i], keep=host)
@@ -661,27 +698,49 @@ class Server:
         """Who makes the pedestrians where players are together: the player with the lowest number within reach.
         The others' games are told to stop making their own and show that player's instead."""
         players = sorted(self.players.values(), key=lambda p: p.id)
+        # Groups: the lowest number not in a group yet leads one; into it go the players within SYNC_NEAR of ANY of
+        # its players (so three in a row are one group, not "the middle one's street comes from the first and the
+        # third has none"), as long as they are within GROUP_NEAR of the leader, whose game has to make their street.
+        # A player already in the group is let go a little later (SYNC_FAR, GROUP_FAR), so the role does not flicker.
+        outdoors = [p for p in players if p.state[8] == 0]         # indoors everybody keeps their own
+        leader, groups = {}, {}
+        for me in outdoors:
+            if me.id in leader:
+                continue
+            leader[me.id] = me
+            group = [me]
+            grew = True
+            while grew and len(group) <= GROUP_MAX:
+                grew = False
+                for other in outdoors:
+                    if other.id in leader or len(group) > GROUP_MAX:
+                        continue
+                    was = other.leader is me
+                    reach = GROUP_FAR if was else GROUP_NEAR
+                    if (other.state[0] - me.state[0]) ** 2 + (other.state[1] - me.state[1]) ** 2 >= reach * reach:
+                        continue
+                    link = SYNC_FAR if was else SYNC_NEAR
+                    if any((other.state[0] - g.state[0]) ** 2 + (other.state[1] - g.state[1]) ** 2 < link * link for g in group):
+                        leader[other.id] = me
+                        group.append(other)
+                        grew = True
+            groups[me.id] = group
         for me in players:
-            limit = SYNC_FAR if not me.populates else SYNC_NEAR   # a little slack, so the role does not flicker
-            populates = True
-            if me.state[8] == 0:                                   # indoors everybody keeps their own
-                for other in players:
-                    if other.id >= me.id:
-                        break
-                    if other.state[8] == 0 and (other.state[0] - me.state[0]) ** 2 + (other.state[1] - me.state[1]) ** 2 < limit * limit:
-                        populates = False
-                        break
+            mine = leader.get(me.id, me)
+            populates = mine is me
+            members = [g.id for g in groups.get(me.id, [me])[1:]] if populates else []
+            if members != me.members:
+                me.members = members
+                me.role_sent = 0.0
+            me.leader = None if populates else mine
             if populates != me.populates:
                 me.populates = populates
                 me.role_sent = 0.0
-                if not populates:
-                    for key in [k for k, e in me.entities.items() if e.kind != KIND_SCRIPT_PED]:
-                        self.entity_index.pop(me.entities[key].id, None)
-                        del me.entities[key]
-                    me.vehicles = {k: v for k, v in me.vehicles.items() if v.kind & (VEH_MINE | VEH_SCRIPT)}  # its own and its mission's stay
+                # (what its game simulates stays its own until handed over: see handover)
             if now - me.role_sent > 1.0:                           # repeated: a lost packet must not leave a game wrong
                 me.role_sent = now
-                self.send(me.addr, S_ROLE, bytes([1 if me.populates else 0]))
+                # (the role; then, for the game that makes a street, the players it makes it for besides its own)
+                self.send(me.addr, S_ROLE, bytes([1 if me.populates else 0, len(me.members)]) + struct.pack("<%dH" % len(me.members), *me.members))
 
     def on_entities(self, player, data, now):
         if not data:
@@ -693,8 +752,8 @@ class Server:
             key, kind, model, pedtype, x, y, z, heading, health, interior = struct.unpack_from(ENT_IN_FORMAT, data, 1 + i * ENT_IN_SIZE)
             if kind not in (KIND_PED, KIND_SCRIPT_PED) or model > 19999 or not (4 <= pedtype <= 31):
                 continue
-            if kind == KIND_PED and not player.populates:
-                continue  # the street's pedestrians come from the syncer; a mission's characters from the game that runs it
+            if self.was_released(player, 1, key, now):
+                continue
             if not all(v == v and abs(v) < 1.0e6 for v in (x, y, z, heading)):
                 continue
             # a game reports what is around its own player, nothing else
@@ -708,6 +767,7 @@ class Server:
                 entity.id = self.next_entity
                 self.next_entity = self.next_entity % 0x7FFFFFFF + 1
                 entity.owner, entity.key = player.id, key
+                entity.offered, entity.offered_to = now, 0   # (not offered in its first second: the others must have been sent it first)
                 player.entities[key] = entity
                 self.entity_index[entity.id] = entity
             elif self.anticheat and (x - entity.x) ** 2 + (y - entity.y) ** 2 > 60.0 ** 2:
@@ -738,8 +798,8 @@ class Server:
                 self.take_over(player, took, now)
             kind = mine & (VEH_MINE | VEH_PARKED | VEH_SCRIPT)
             mine = kind & VEH_MINE
-            if not player.populates and not kind & (VEH_MINE | VEH_SCRIPT):
-                continue  # traffic and parked cars come from the syncer; a player's own vehicle and a mission's from their game
+            if not mine and self.was_released(player, 2, key, now):
+                continue
             if not (400 <= model <= 611) or driver_model > 19999:
                 continue
             if not all(v == v and abs(v) < 1.0e6 for v in (x, y, z)):
@@ -753,7 +813,8 @@ class Server:
                 vehicle = Vehicle()
                 vehicle.id = self.next_entity
                 self.next_entity = self.next_entity % 0x7FFFFFFF + 1
-                vehicle.owner = player.id
+                vehicle.owner, vehicle.key = player.id, key
+                vehicle.offered, vehicle.offered_to = now, 0   # (not offered in its first second: the others must have been sent it first)
                 player.vehicles[key] = vehicle
             elif self.anticheat and (x - vehicle.x) ** 2 + (y - vehicle.y) ** 2 > 200.0 ** 2:
                 continue  # no vehicle jumps 200 m between two reports
@@ -762,6 +823,113 @@ class Server:
             vehicle.kind = kind
             vehicle.data = fields[1:17] + (driver_model, driver_type if 4 <= driver_type <= 31 else 0, vehicle.player, interior, kind, lights, damage) + riders
             vehicle.heard = now
+
+    def was_released(self, player, kind, key, now):
+        """This game still reports something it has handed over: it is told again (the first word may have been lost)."""
+        gone = player.released.get((kind, key))
+        if gone is None:
+            return False
+        if now - gone[0] > 10.0:
+            del player.released[(kind, key)]
+            return False
+        self.send(player.addr, S_RELEASE, struct.pack("<BII", kind, key, gone[1]))
+        return True
+
+    def handover(self, now):
+        """MTA's rule: a syncer is kept while its player is within the distance; otherwise the player within the
+        distance whose game simulates the fewest is offered it (once a second until one answers)."""
+        players = [p for p in self.players.values()]
+        if len(players) < 2:
+            return
+        load = {p.id: len(p.entities) + len(p.vehicles) for p in players}
+        for owner in players:
+            ox, oy, interior = owner.state[0], owner.state[1], owner.state[8]
+            things = [(1, e, e.x, e.y, PED_SYNCER_DISTANCE) for e in owner.entities.values() if e.kind == KIND_PED]
+            things += [(2, v, v.x, v.y, VEH_SYNCER_DISTANCE) for v in owner.vehicles.values() if not v.kind & (VEH_MINE | VEH_SCRIPT) and not v.player]
+            for kind, thing, x, y, limit in things:
+                if (x - ox) ** 2 + (y - oy) ** 2 <= limit * limit or now - thing.offered < 1.0:
+                    continue
+                best = None
+                for p in players:
+                    if p is owner or p.state[8] != interior or (p.state[6] & FLAG_DEAD):
+                        continue
+                    if (x - p.state[0]) ** 2 + (y - p.state[1]) ** 2 <= limit * limit and (best is None or load[p.id] < load[best.id]):
+                        best = p
+                if best is None:
+                    continue
+                thing.offered, thing.offered_to = now, best.id
+                self.send(best.addr, S_HANDOVER, struct.pack("<BI", kind, thing.id))
+
+    def on_adopt(self, player, data, now):
+        if len(data) < 9:
+            return
+        kind, thing_id, key = struct.unpack_from("<BII", data)
+        for owner in self.players.values():
+            if owner is player:
+                continue
+            table = owner.entities if kind == 1 else owner.vehicles if kind == 2 else {}
+            for old_key, thing in table.items():
+                if thing.id != thing_id:
+                    continue
+                if thing.offered_to != player.id or now - thing.offered > 5.0:
+                    return                      # not offered to this player (or too long ago)
+                mine = player.entities if kind == 1 else player.vehicles
+                if key in mine or len(mine) >= (ENT_PER_PLAYER if kind == 1 else VEH_PER_PLAYER):
+                    return
+                del table[old_key]
+                owner.released[(kind, old_key)] = (now, thing_id)
+                thing.owner, thing.key, thing.heard, thing.offered_to = player.id, key, now, 0
+                mine[key] = thing
+                player.released.pop((kind, key), None)
+                self.handovers = getattr(self, "handovers", 0) + 1
+                self.send(owner.addr, S_RELEASE, struct.pack("<BII", kind, old_key, thing_id))
+                return
+
+    def vehicle_name(self, owner, key):
+        """One name for a vehicle whichever game asks: (the id of the player whose game simulates it, that game's key)."""
+        if owner != 0xFFFF:
+            return (owner, key)
+        for p in self.players.values():
+            for k, v in p.vehicles.items():
+                if v.id == key:
+                    return (p.id, k)
+        return ("street", key)
+
+    def on_vehicle_in(self, player, data, now):
+        if len(data) < 8:
+            return
+        owner, key, seat, seats = struct.unpack_from("<HIBB", data)
+        riding = self.__dict__.setdefault("riding", {})   # player id -> (vehicle name, seat, since)
+        def answer(result, got=0, reason=0):
+            self.send(player.addr, S_VEHICLE_IN, struct.pack("<BHIBB", result, owner, key, got, reason))
+        riding.pop(player.id, None)
+        if player.state[6] & (FLAG_DEAD | FLAG_DOWN):
+            return answer(0, reason=1)
+        name = self.vehicle_name(owner, key)
+        taken = {}
+        for pid, (vehicle, s, since) in list(riding.items()):
+            other = self.players.get(pid)
+            if other is None or (now - since > 10.0 and not other.state[6] & FLAG_IN_VEHICLE):
+                del riding[pid]      # gone, or never got in
+            elif vehicle == name:
+                taken[s] = (pid, since)
+        if seat == 0:
+            if 0 in taken and now - taken[0][1] < 3.0:
+                return answer(0, reason=2)   # two players at one door: the first has it
+            result = 2 if 0 in taken else 1
+            if 0 in taken:
+                del riding[taken[0][0]]
+            got = 0
+        else:
+            free = [s for s in range(1, max(1, min(seats, 8)) + 1) if s not in taken]
+            if not free:
+                return answer(0, reason=3)
+            got, result = free[0], 1
+        riding[player.id] = (name, got, now)
+        answer(result, got)
+
+    def on_vehicle_out(self, player):
+        self.__dict__.setdefault("riding", {}).pop(player.id, None)
 
     def take_over(self, player, vehicle_id, now):
         """A player got into a vehicle another game simulates (the copy of it, in their own game). From now on it is
@@ -789,7 +957,7 @@ class Server:
                 if owner is me:
                     continue
                 for v in owner.vehicles.values():
-                    if (v.x - me.state[0]) ** 2 + (v.y - me.state[1]) ** 2 <= r2 and (owner.populates or v.kind & (VEH_MINE | VEH_SCRIPT)):
+                    if (v.x - me.state[0]) ** 2 + (v.y - me.state[1]) ** 2 <= r2:
                         parts.append(struct.pack(VEH_OUT_FORMAT, v.id, v.owner, *v.data))
             for start in range(0, len(parts), 18):
                 chunk = parts[start:start + 18]
@@ -810,7 +978,7 @@ class Server:
                 if owner is me:
                     continue
                 for e in owner.entities.values():
-                    if (owner.populates or e.kind == KIND_SCRIPT_PED) and (e.x - me.state[0]) ** 2 + (e.y - me.state[1]) ** 2 <= r2:
+                    if (e.x - me.state[0]) ** 2 + (e.y - me.state[1]) ** 2 <= r2:
                         parts.append(struct.pack(ENT_OUT_FORMAT, e.id, e.owner, e.kind, e.model, e.pedtype, e.x, e.y, e.z, e.heading, e.health, e.interior))
             for start in range(0, len(parts), 40):  # 40 to a datagram; an empty one still says "nothing here"
                 chunk = parts[start:start + 40]
@@ -874,6 +1042,12 @@ class Server:
                 self.on_state(player, body, now)
             elif kind == C_SYNC:
                 self.on_sync(player, body)
+            elif kind == C_VEHICLE_IN:
+                self.on_vehicle_in(player, body, now)
+            elif kind == C_VEHICLE_OUT:
+                self.on_vehicle_out(player)
+            elif kind == C_ADOPT:
+                self.on_adopt(player, body, now)
             elif kind == C_ENTITIES:
                 self.on_entities(player, body, now)
             elif kind == C_VEHICLES:
@@ -896,6 +1070,8 @@ class Server:
                     self.send(other.addr, S_MISSION_END, struct.pack("<HB", player.id, body[0] if body else 0))
                 player.party = set()
                 player.cut_name, player.cut_waiting = b"", set()
+                if self.mission_owner == player.id:
+                    self.mission_owner = None
             elif kind == C_CUTSCENE and len(body) >= 8:
                 self.on_cutscene(player, bytes(body[:8]), body[8] if len(body) > 8 else 0)
             elif kind == C_CUTSCENE_DONE:
@@ -1002,6 +1178,7 @@ class Server:
                     self.roles(now)
                     self.tick_count = getattr(self, "tick_count", 0) + 1
                     if self.tick_count % 2 == 0:  # the world goes out 10 times a second
+                        self.handover(now)
                         self.entity_snapshots(now)
                         self.vehicle_snapshots(now)
                     if len(self.unknown) > 10000:
@@ -1029,9 +1206,11 @@ class Server:
                         "in a vehicle" if s[6] & FLAG_IN_VEHICLE else "on foot     ", duration(now - p.joined),
                         "simulates %d pedestrians, %d vehicles" % (len(p.entities), len(p.vehicles)) if p.populates else "shows another player's world"))
             elif cmd == "status":
-                print("%s: %d of %d players, port %d, %d ticks a second, password %s, anti-cheat %s, up %s, %d packets in, %d out" % (
-                    self.name, len(self.players), self.max_players, self.port, self.tick, "set" if self.password else "none",
+                print("%s: %d of %d players, port %d, %d ticks a second, games at %d frames a second, password %s, anti-cheat %s, up %s, %d packets in, %d out" % (
+                    self.name, len(self.players), self.max_players, self.port, self.tick, self.fps, "set" if self.password else "none",
                     "on" if self.anticheat else "off", duration(time.time() - self.started), self.received, self.sent))
+                owner = self.players.get(self.mission_owner) if self.mission_owner is not None else None
+                print("mission: %s" % ("number %d, run by %s's game, %d more players in it" % (self.mission_number, owner.name, len(owner.party)) if owner else "none running"))
             elif cmd == "kick":
                 target = self.find(arg)
                 if target:
@@ -1132,6 +1311,7 @@ def main():
     parser.add_argument("--password", default=os.environ.get("UM_PASSWORD", ""), help="players must give this to join (or set UM_PASSWORD)")
     parser.add_argument("--max-players", type=int, default=100)
     parser.add_argument("--tick", type=int, default=20, help="snapshots a second (default 20)")
+    parser.add_argument("--fps", type=int, default=60, choices=(25, 30, 60), help="frames a second every player's game simulates at (default 60; needs SilentPatch and FramerateVigilante in the game, as in single player)")
     parser.add_argument("--radius", type=float, default=300.0, help="players farther apart than this are not sent to each other")
     parser.add_argument("--anticheat", action="store_true", help="start with the checks on (movement, hits). Off by default: story missions move players in ways the movement check counts as cheating")
     parser.add_argument("--no-anticheat", action="store_true", help=argparse.SUPPRESS)

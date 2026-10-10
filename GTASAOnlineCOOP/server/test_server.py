@@ -140,7 +140,8 @@ def main():
         mine = [e for e in second.entities.values() if e[0] == first.id]
         check("the other player receives the syncer's pedestrians with model, type, place and health",
               len(mine) == 2 and sorted(e[2] for e in mine) == [7, 9] and any(abs(e[5] + 1700.0) < 0.1 and e[8] == 800 for e in mine))
-        check("the syncer is not sent its own pedestrians, nor the ones the other tried to report", not first.entities)
+        check("a game is not sent its own pedestrians; it is sent the one the other game simulates (one syncer for each, whoever makes the street)",
+              [e[2] for e in first.entities.values()] == [20] and all(e[0] != first.id for e in first.entities.values()))
         ids_before = set(second.entities)
         def one_left():
             a.state(2495.0, -1687.0, 13.5)
@@ -232,8 +233,9 @@ def main():
         check("the other player receives the syncer's traffic (a car with its driver's model), not a vehicle with an impossible model",
               len(got) == 1 and got[0][1] == 404 and got[0][17] == 7 and got[0][19] == 0 and got[0][21] == 0 and abs(got[0][11] - 0) <= 1 and abs(got[0][12] - 800) <= 8)
         got = list(first.vehicles.values())
-        check("the syncer receives the vehicle the other player sits in, marked with that player, and not the traffic that player tried to report",
-              len(got) == 1 and got[0][1] == 410 and got[0][19] == second.id and got[0][14] == 900)
+        got = [v for v in got if v[1] == 410]
+        check("the syncer receives the vehicle the other player sits in, marked with that player",
+              len(got) == 1 and got[0][19] == second.id and got[0][14] == 900)
         # damage, lights and passengers travel with a vehicle; a player riding as a passenger names the vehicle and the seat
         car_id = [i for i, v in second.vehicles.items() if v[1] == 404][0]
         dents = bytes(range(1, 21))
@@ -275,10 +277,10 @@ def main():
             first.report_vehicles([(42, 445, 2490.0, -1695.0, 13.5, 0.0, 0.0, 1000, 2, 0, 0)])
         run_for([a, b], 1.5, mission)
         got = [e for e in first.entities.values()]
-        check("a mission character reported by a player who is not the syncer reaches the others, marked as such; their street pedestrian does not",
-              len(got) == 1 and got[0][2] == 105 and got[0][1] == 3)
+        check("a mission character reported by a player who is not the syncer reaches the others, marked as such",
+              [e[1] for e in got if e[2] == 105] == [3])
         got = sorted((v[1], v[21]) for v in first.vehicles.values())
-        check("so does a mission's vehicle, but not a parked car from a non-syncer", got == [(420, 4)])
+        check("so does a mission's vehicle, and a parked car that game simulates", (420, 4) in got and (421, 2) in got)
         got = sorted((v[1], v[21]) for v in second.vehicles.values())
         check("the syncer's parked cars reach the others, marked as parked", got == [(445, 2)])
         target = [i for i, e in first.entities.items() if e[2] == 105][0]
@@ -345,6 +347,21 @@ def main():
         run_for([a, b], 0.4, alone)
         check("with nobody nearby the mission starts at once and nobody is asked", [r[3] for r in a.results] == [1] and not b.asks)
         a.results = []
+        # one mission at a time: while Alice's runs, Bob cannot start another
+        b.results = []
+        b.ask_mission(7)
+        run_for([a, b], 0.4, alone)
+        check("while one player's mission runs, another player's mission is not started and they are told why",
+              [(r[1], r[3], r[4]) for r in b.results] == [(a.id, 0, 3)] and not a.asks)
+        a.mission_end(True)
+        run_for([a, b], 2.5, alone)
+        b.results = []
+        b.ask_mission(7)
+        run_for([a, b], 0.4, alone)
+        check("when it has ended, the next mission can start", [r[3] for r in b.results] == [1])
+        b.mission_end(False)
+        run_for([a, b], 0.3, alone)
+        b.results = []
         run_for([a, b], 6.0, together)
         b.corrections = []   # (this test's own jumps away and back)
 
@@ -396,10 +413,29 @@ def main():
             run_for([c], 0.12)
         check("with the anti-cheat switched off from the console, teleporting is accepted", not c.corrections and c.kicked is None)
 
+        # the game that runs a mission leaves: the mission has failed for the players in it, and another can start
+        def side_by_side():
+            b.state(2500.0, -1680.0, 13.5)
+            c.state(2503.0, -1680.0, 13.5)
+        run_for([b, c], 6.5, side_by_side)
+        b.auto_vote = 1
+        b.mission_ends, c.results = [], []
+        c.ask_mission(9)
+        run_for([b, c], 1.0, side_by_side)
+        check("a mission with one more player in it is running", [r[3] for r in c.results] == [1] and c.party == [b.id])
+        carol = c.id
+
         # silence: a player who stops talking is dropped after the timeout (15 s is too long for a test; BYE instead)
         c.bye()
         run_for([b], 0.5)
         check("a player who quits is removed at once", c.id not in b.names)
+        check("when the player whose game runs the mission leaves, the players in it are told it has failed", b.mission_ends == [(carol, 2)])
+        b.results = []
+        b.ask_mission(10)
+        run_for([b], 2.5)
+        check("and the next mission can start", [r[3] for r in b.results] == [1])
+        b.mission_end(False)
+        run_for([b], 0.3)
 
         # junk does not disturb the server
         import socket

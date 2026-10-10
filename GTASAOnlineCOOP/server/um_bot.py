@@ -100,7 +100,7 @@ class Client:
         """Reads what has arrived."""
         began = time.time()
         while True:
-            if time.time() - began > 0.1:   # (a steady stream must not keep the caller here: it has its own things to send)
+            if time.time() - began > 0.01:  # (a steady stream must not keep the caller here: it has its own things to send)
                 return
             try:
                 data, _ = self.sock.recvfrom(4096)
@@ -189,8 +189,22 @@ class Client:
                 self.damage.append((who, amount / 10.0, weapon))
             elif kind == S_TAKEN:
                 self.taken.append(struct.unpack_from("<I", body)[0])
+            elif kind == 99:   # S_HANDOVER: kind, id
+                thing_kind, thing_id = struct.unpack_from("<BI", body)
+                self.offers = getattr(self, "offers", []) + [(thing_kind, thing_id)]
+                known = thing_kind != 1 or not hasattr(self, "adopts_vehicles") or thing_id in getattr(self, "entities", {})   # (a game adopts only what it shows a copy of)
+                if getattr(self, "adopts", False) and known and (thing_kind == 1 or getattr(self, "adopts_vehicles", True)):
+                    self.send(30, struct.pack("<BII", thing_kind, thing_id, thing_id | 0x40000000))   # C_ADOPT, with a key of its own
+                    self.adopt_sent_count = getattr(self, "adopt_sent_count", 0) + 1
+                    if thing_kind == 1 and thing_id in getattr(self, "entities", {}):
+                        self.adopted = getattr(self, "adopted", {})
+                        self.adopted[thing_id | 0x40000000] = list(self.entities[thing_id])
+            elif kind == 100:  # S_RELEASE: kind, this game's key, id
+                self.releases = getattr(self, "releases", []) + [struct.unpack_from("<BII", body)]
+                getattr(self, "adopted", {}).pop(self.releases[-1][1], None)
             elif kind == S_ROLE:
                 self.populates = bool(body[0])
+                self.members = list(struct.unpack_from("<%dH" % body[1], body, 2)) if len(body) >= 2 and len(body) >= 2 + 2 * body[1] else []
             elif kind == S_ENTITIES:
                 self.entity_packets += 1
                 fresh = {}
@@ -236,9 +250,15 @@ class Client:
             d = (heading - last + math.pi) % (2 * math.pi) - math.pi
             turn = d / (now - before[0]) / 50.0
         self.sync_heading = heading
+        # The controls a driver on this path would hold: the receiving game drives the car with them between the
+        # reports (as it does with a real player's). Without them the car was pushed round its circle with straight
+        # wheels and no throttle, and its tyres smoked all the way (user, 2026-10-10). Steering: left stick, left
+        # is negative; the accelerator is the cross button (pad slot 16 = bit 12).
+        steer = 0 if abs(turn) < 0.0005 else (-90 if turn > 0 else 90)
+        gas = (1 << 12) if (vx * vx + vy * vy) > 0.25 else 0
         self.sync_sequence = (getattr(self, "sync_sequence", 0) + 1) & 0xFFFF
         self.send(29, struct.pack(self.SYNC_FORMAT, 2, 2, self.sync_sequence, x, y, z, vx / 50.0, vy / 50.0, 0.0, heading,
-                                  int(health * 10), 0, 0, 0, interior, 0, 0, 0, 0, 0, 0,
+                                  int(health * 10), 0, 0, 0, interior, 0, steer, 0, 0, 0, gas,
                                   fx, fy, 0.0, x - fx * 6.0, y - fy * 6.0, z + 2.0, math.atan2(fy, fx), 18, 70, getattr(self, "skin", 0),
                                   0, 1, 0, model, fy, -fx, 0.0, fx, fy, 0.0, 0.0, 0.0, turn, 1000, 3, 1, 0, 0))
 
@@ -392,6 +412,8 @@ def main():
     parser.add_argument("--host-delay", type=float, default=60.0)
     parser.add_argument("--watch", type=float, default=0.0, help="seconds this player takes to watch a cutscene of a joined mission")
     parser.add_argument("--join-delay", type=float, default=0.0, help="wait this long before joining (to get a higher player number than the game)")
+    parser.add_argument("--adopt", nargs=2, type=float, default=None, metavar=("X", "Y"),
+                        help="take over the pedestrians the server offers (hand-over test) and walk them towards this place at 5 m/s")
     parser.add_argument("--hurt-peds", action="store_true", help="every two seconds, take 40 health off one of the pedestrians another game simulates")
     parser.add_argument("--mission-peds", type=int, default=0, help="characters 'made by a mission' this bot simulates, standing in a row; it prints the damage others do to them")
     parser.add_argument("--parked", type=int, default=0, help="parked cars this bot simulates, in a row")
@@ -424,6 +446,7 @@ def main():
         print("could not join: %s" % ("rejected, reason %d" % bot.rejected if bot.rejected else "no answer"))
         return 1
     bot.auto_vote = args.vote
+    bot.sock.settimeout(0.005)   # (the stand-alone scripted player reports about 30 times a second, as a real game does)
     cx, cy, cz = args.centre if args.centre else bot.spawn[:3]
     print("joined as player %d (%s); walking a circle of %.0f m around %.1f %.1f %.1f" % (bot.id, bot.name, args.radius, cx, cy, cz))
     start = time.time()
@@ -445,8 +468,31 @@ def main():
         t = time.time() - start
         if t - getattr(bot, "street_said", -10.0) >= 3.0:   # the shared street, as this player gets it
             bot.street_said = t
-            print("street at %3.0f s: this bot makes it: %s; receives %d pedestrians, %d vehicles" % (
-                t, bot.populates, len(getattr(bot, "entities", {})), len(getattr(bot, "vehicles", {}))))
+            near_p = sum(1 for e in getattr(bot, "entities", {}).values() if (e[4] - cx) ** 2 + (e[5] - cy) ** 2 < 60.0 ** 2)
+            near_v = sum(1 for v in getattr(bot, "vehicles", {}).values() if (v[2] - cx) ** 2 + (v[3] - cy) ** 2 < 60.0 ** 2)
+            heights = [e[6] for e in getattr(bot, "entities", {}).values() if (e[4] - cx) ** 2 + (e[5] - cy) ** 2 < 60.0 ** 2]
+            print("street at %3.0f s: this bot makes it: %s; receives %d pedestrians, %d vehicles (within 60 m of this bot: %d and %d; those pedestrians stand at heights %.1f .. %.1f, the bot at %.1f)" % (
+                t, bot.populates, len(getattr(bot, "entities", {})), len(getattr(bot, "vehicles", {})), near_p, near_v,
+                min(heights) if heights else 0.0, max(heights) if heights else 0.0, cz))
+        if args.adopt:
+            bot.adopts, bot.adopts_vehicles = True, False
+            held = getattr(bot, "adopted", {})
+            step = 5.0 * (t - getattr(bot, "adopt_time", t))
+            bot.adopt_time = t
+            for e in held.values():   # owner, kind, model, ped type, x, y, z, heading, health x 10, interior
+                dx, dy = args.adopt[0] - e[4], args.adopt[1] - e[5]
+                d = math.hypot(dx, dy)
+                if d > 1.0:
+                    e[4] += dx / d * step
+                    e[5] += dy / d * step
+                    e[7] = math.atan2(-dx, dy)
+            if held and t - getattr(bot, "adopt_sent", 0.0) >= 0.1:
+                bot.adopt_sent = t
+                bot.report([(key, e[2], e[3], e[4], e[5], e[6], e[7], e[8] / 10.0, e[9]) for key, e in list(held.items())[:40]])
+            if t - getattr(bot, "adopt_said", -10.0) >= 3.0:
+                bot.adopt_said = t
+                print("hand-over at %3.0f s: offered %d, holding %d, given back %d" % (t, len(getattr(bot, "offers", [])), len(held), len(getattr(bot, "releases", []))) +
+                      "; pedestrians offered %d, adoptions sent %d" % (sum(1 for o in getattr(bot, "offers", []) if o[0] == 1), getattr(bot, "adopt_sent_count", 0)))
         angle = t * 1.4 / args.radius  # walking pace
         x, y = cx + math.cos(angle) * args.radius, cy + math.sin(angle) * args.radius
         cars = []
@@ -600,7 +646,7 @@ def main():
             if pid not in seen:
                 seen.add(pid)
                 print("sees player %d (%s) at %.1f %.1f %.1f" % (pid, bot.names.get(pid, "?"), *bot.others[pid][:3]))
-        time.sleep(0.05)
+        time.sleep(0.025)   # about 30 reports a second, as a real game sends
     bot.bye()
     print("left" if bot.kicked is None else "kicked: " + bot.kicked)
     return 0
